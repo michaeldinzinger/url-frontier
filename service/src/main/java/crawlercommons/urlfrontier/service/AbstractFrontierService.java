@@ -66,22 +66,28 @@ public abstract class AbstractFrontierService
     private static final org.slf4j.Logger LOG =
             LoggerFactory.getLogger(AbstractFrontierService.class);
 
-    private static final Counter getURLs_calls =
+    protected static final Counter getURLs_calls =
             Counter.build()
                     .name("frontier_getURLs_calls_total")
                     .help("Number of times getURLs has been called.")
                     .register();
 
-    private static final Counter getURLs_urls_count =
+    protected static final Counter getURLs_urls_count =
             Counter.build()
                     .name("frontier_getURLs_total")
                     .help("Number of URLs returned.")
                     .register();
 
-    private static final Summary getURLs_Latency =
+    protected static final Summary getURLs_Latency =
             Summary.build()
                     .name("frontier_getURLs_latency_seconds")
                     .help("getURLs latency in seconds.")
+                    .register();
+
+    protected static final Summary getURLs_Latency_v2 =
+            Summary.build()
+                    .name("frontier_getURLs_latency_seconds_v2")
+                    .help("getURLs latency in seconds._v2")
                     .register();
 
     protected static final Counter putURLs_calls =
@@ -522,6 +528,9 @@ public abstract class AbstractFrontierService
 
         Summary.Timer requestTimer = getURLs_Latency.startTimer();
 
+        long start = System.currentTimeMillis();
+        long now = Instant.now().getEpochSecond();
+
         final int maxQueues;
 
         // 0 by default
@@ -530,6 +539,10 @@ public abstract class AbstractFrontierService
         } else {
             maxQueues = request.getMaxQueues();
         }
+
+        final SynchronizedStreamObserver<URLInfo> synchStreamObs =
+                (SynchronizedStreamObserver<URLInfo>)
+                        SynchronizedStreamObserver.wrapping(responseObserver, maxQueues);
 
         final int maxURLsPerQueue;
 
@@ -554,8 +567,6 @@ public abstract class AbstractFrontierService
                 secsUntilRequestable,
                 requestID.toString());
 
-        long start = System.currentTimeMillis();
-
         // if null -> don't care about a particular crawl
         String crawlID = null;
 
@@ -563,12 +574,6 @@ public abstract class AbstractFrontierService
         if (request.hasCrawlID()) crawlID = request.getCrawlID();
 
         String key = request.getKey();
-
-        long now = Instant.now().getEpochSecond();
-
-        final SynchronizedStreamObserver<URLInfo> synchStreamObs =
-                (SynchronizedStreamObserver<URLInfo>)
-                        SynchronizedStreamObserver.wrapping(responseObserver, maxQueues);
 
         // want a specific key only?
         // default is an empty string so should never be null
@@ -609,9 +614,6 @@ public abstract class AbstractFrontierService
             int totalSent =
                     sendURLsForQueue(
                             queue, qwc, maxURLsPerQueue, secsUntilRequestable, now, synchStreamObs);
-            responseObserver.onCompleted();
-
-            getURLs_urls_count.inc(totalSent);
 
             LOG.info(
                     "Sent {} from queue {} in {} msec {}",
@@ -624,8 +626,10 @@ public abstract class AbstractFrontierService
                 queue.setLastProduced(now);
             }
 
+            getURLs_urls_count.inc(totalSent);
             requestTimer.observeDuration();
 
+            responseObserver.onCompleted();
             return;
         }
 
@@ -638,6 +642,9 @@ public abstract class AbstractFrontierService
 
         if (getQueues().isEmpty()) {
             LOG.info("No queues to get URLs from! {}", requestID.toString());
+
+            requestTimer.observeDuration();
+
             responseObserver.onCompleted();
             return;
         }
@@ -729,7 +736,7 @@ public abstract class AbstractFrontierService
                 requestID.toString());
 
         getURLs_urls_count.inc(totalSent.get());
-
+        getURLs_Latency_v2.observe((System.currentTimeMillis() - start) / (double) 1000);
         requestTimer.observeDuration();
 
         synchStreamObs.onCompleted();
